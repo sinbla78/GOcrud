@@ -1,8 +1,12 @@
 package main
 
 import (
+	"crypto/rand"
+	"encoding/hex"
+	"fmt"
 	"log"
 	"net/http"
+	"net/smtp"
 	"os"
 	"strconv"
 	"strings"
@@ -19,13 +23,26 @@ import (
 
 // User 모델
 type User struct {
-	ID       uint   `gorm:"primaryKey" json:"id"`
-	Name     string `json:"name"`
-	Email    string `gorm:"uniqueIndex" json:"email"`
-	Password string `json:"-"` // JSON 출력에서만 제외하고 DB에는 저장됨
+	ID              uint      `gorm:"primaryKey" json:"id"`
+	Name            string    `json:"name"`
+	Email           string    `gorm:"uniqueIndex" json:"email"`
+	Password        string    `json:"-"` // JSON 출력에서 제외
+	IsEmailVerified bool      `gorm:"default:false" json:"is_email_verified"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
 }
 
-// Post 모델 추가
+// EmailVerification 모델 - 이메일 인증 토큰 관리
+type EmailVerification struct {
+	ID        uint      `gorm:"primaryKey" json:"id"`
+	Email     string    `gorm:"index" json:"email"`
+	Token     string    `gorm:"uniqueIndex" json:"token"`
+	ExpiresAt time.Time `json:"expires_at"`
+	IsUsed    bool      `gorm:"default:false" json:"is_used"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// Post 모델
 type Post struct {
 	ID        uint      `gorm:"primaryKey" json:"id"`
 	Title     string    `json:"title"`
@@ -45,6 +62,18 @@ type Claims struct {
 var db *gorm.DB
 var jwtSecret []byte
 
+// 이메일 설정 구조체
+type EmailConfig struct {
+	SMTPHost     string
+	SMTPPort     string
+	SMTPUsername string
+	SMTPPassword string
+	FromEmail    string
+	FromName     string
+}
+
+var emailConfig EmailConfig
+
 // 데이터베이스 초기화
 func initDB() {
 	dsn := os.Getenv("DB_DSN")
@@ -55,7 +84,7 @@ func initDB() {
 	}
 	
 	// 모델 마이그레이션
-	db.AutoMigrate(&User{}, &Post{})
+	db.AutoMigrate(&User{}, &Post{}, &EmailVerification{})
 }
 
 // 환경 변수 로드
@@ -64,11 +93,95 @@ func loadEnv() {
 	if err != nil {
 		log.Println("환경 변수 파일(.env) 로드 실패:", err)
 	}
+	
 	jwtSecret = []byte(os.Getenv("JWT_SECRET"))
 	if len(jwtSecret) == 0 {
 		log.Println("경고: JWT_SECRET이 설정되지 않았습니다. 기본값 사용")
-		jwtSecret = []byte("default_secret_key") // 기본값 설정
+		jwtSecret = []byte("default_secret_key")
 	}
+	
+	// 이메일 설정 로드
+	emailConfig = EmailConfig{
+		SMTPHost:     os.Getenv("SMTP_HOST"),
+		SMTPPort:     os.Getenv("SMTP_PORT"),
+		SMTPUsername: os.Getenv("SMTP_USERNAME"),
+		SMTPPassword: os.Getenv("SMTP_PASSWORD"),
+		FromEmail:    os.Getenv("FROM_EMAIL"),
+		FromName:     os.Getenv("FROM_NAME"),
+	}
+	
+	// 기본값 설정
+	if emailConfig.SMTPHost == "" {
+		emailConfig.SMTPHost = "smtp.gmail.com"
+	}
+	if emailConfig.SMTPPort == "" {
+		emailConfig.SMTPPort = "587"
+	}
+	if emailConfig.FromName == "" {
+		emailConfig.FromName = "Your App"
+	}
+}
+
+// 랜덤 토큰 생성
+func generateRandomToken() (string, error) {
+	bytes := make([]byte, 32)
+	if _, err := rand.Read(bytes); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(bytes), nil
+}
+
+// 이메일 발송 함수
+func sendEmail(to, subject, body string) error {
+	from := emailConfig.FromEmail
+	password := emailConfig.SMTPPassword
+	
+	// Gmail SMTP 설정
+	smtpHost := emailConfig.SMTPHost
+	smtpPort := emailConfig.SMTPPort
+	
+	message := []byte(fmt.Sprintf("To: %s\r\n"+
+		"Subject: %s\r\n"+
+		"MIME-version: 1.0;\r\n"+
+		"Content-Type: text/html; charset=\"UTF-8\";\r\n\r\n"+
+		"%s\r\n", to, subject, body))
+	
+	auth := smtp.PlainAuth("", from, password, smtpHost)
+	
+	err := smtp.SendMail(smtpHost+":"+smtpPort, auth, from, []string{to}, message)
+	if err != nil {
+		log.Printf("이메일 발송 실패: %v", err)
+		return err
+	}
+	
+	log.Printf("이메일 발송 성공: %s", to)
+	return nil
+}
+
+// 인증 이메일 발송
+func sendVerificationEmail(email, token string) error {
+	verificationURL := fmt.Sprintf("%s/verify-email?token=%s", os.Getenv("BASE_URL"), token)
+	if os.Getenv("BASE_URL") == "" {
+		verificationURL = fmt.Sprintf("http://localhost:8080/verify-email?token=%s", token)
+	}
+	
+	subject := "이메일 인증을 완료해주세요"
+	body := fmt.Sprintf(`
+		<html>
+		<body>
+			<h2>이메일 인증</h2>
+			<p>안녕하세요!</p>
+			<p>회원가입을 완료하려면 아래 링크를 클릭하여 이메일 인증을 완료해주세요.</p>
+			<p><a href="%s" style="background-color: #4CAF50; color: white; padding: 10px 20px; text-decoration: none; border-radius: 4px;">이메일 인증하기</a></p>
+			<p>또는 다음 링크를 복사하여 브라우저에 붙여넣기 하세요:</p>
+			<p>%s</p>
+			<p>이 링크는 24시간 후에 만료됩니다.</p>
+			<p>감사합니다.</p>
+		</body>
+		</html>
+	`, verificationURL, verificationURL)
+	
+	return sendEmail(email, subject, body)
 }
 
 // 비밀번호 해싱 함수
@@ -114,16 +227,16 @@ func generateTokens(userID uint) (string, string, error) {
 	return accessTokenString, refreshTokenString, nil
 }
 
-// 회원가입
+// 회원가입 (이메일 인증 필요)
 func register(c *gin.Context) {
 	var req struct {
-		Name     string `json:"name"`
-		Email    string `json:"email"`
-		Password string `json:"password"`
+		Name     string `json:"name" binding:"required"`
+		Email    string `json:"email" binding:"required,email"`
+		Password string `json:"password" binding:"required,min=6"`
 	}
 	
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "잘못된 입력 데이터"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "잘못된 입력 데이터: " + err.Error()})
 		return
 	}
 
@@ -134,16 +247,19 @@ func register(c *gin.Context) {
 		return
 	}
 
+	// 비밀번호 해싱
 	hashedPassword, err := hashPassword(req.Password)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "비밀번호 암호화 실패"})
 		return
 	}
 
+	// 사용자 생성 (이메일 미인증 상태)
 	newUser := User{
-		Name:     req.Name,
-		Email:    req.Email,
-		Password: hashedPassword,
+		Name:            req.Name,
+		Email:           req.Email,
+		Password:        hashedPassword,
+		IsEmailVerified: false,
 	}
 
 	if err := db.Create(&newUser).Error; err != nil {
@@ -151,14 +267,126 @@ func register(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusCreated, gin.H{"message": "회원가입 성공", "user_id": newUser.ID})
+	// 인증 토큰 생성
+	token, err := generateRandomToken()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "인증 토큰 생성 실패"})
+		return
+	}
+
+	// 인증 정보 저장
+	verification := EmailVerification{
+		Email:     req.Email,
+		Token:     token,
+		ExpiresAt: time.Now().Add(time.Hour * 24), // 24시간 유효
+		IsUsed:    false,
+	}
+
+	if err := db.Create(&verification).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "인증 정보 저장 실패"})
+		return
+	}
+
+	// 인증 이메일 발송
+	if err := sendVerificationEmail(req.Email, token); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "인증 이메일 발송 실패"})
+		return
+	}
+
+	c.JSON(http.StatusCreated, gin.H{
+		"message": "회원가입이 완료되었습니다. 이메일을 확인하여 인증을 완료해주세요.",
+		"user_id": newUser.ID,
+	})
 }
 
-// 로그인
+// 이메일 인증
+func verifyEmail(c *gin.Context) {
+	token := c.Query("token")
+	if token == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "인증 토큰이 필요합니다."})
+		return
+	}
+
+	var verification EmailVerification
+	if err := db.Where("token = ? AND is_used = false AND expires_at > ?", token, time.Now()).First(&verification).Error; err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "유효하지 않거나 만료된 인증 토큰입니다."})
+		return
+	}
+
+	// 사용자 이메일 인증 상태 업데이트
+	if err := db.Model(&User{}).Where("email = ?", verification.Email).Update("is_email_verified", true).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "이메일 인증 처리 실패"})
+		return
+	}
+
+	// 인증 토큰 사용 처리
+	verification.IsUsed = true
+	db.Save(&verification)
+
+	c.JSON(http.StatusOK, gin.H{"message": "이메일 인증이 완료되었습니다. 이제 로그인할 수 있습니다."})
+}
+
+// 인증 이메일 재발송
+func resendVerificationEmail(c *gin.Context) {
+	var req struct {
+		Email string `json:"email" binding:"required,email"`
+	}
+	
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "유효한 이메일을 입력해주세요."})
+		return
+	}
+
+	// 사용자 확인
+	var user User
+	if err := db.Where("email = ?", req.Email).First(&user).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "존재하지 않는 이메일입니다."})
+		return
+	}
+
+	// 이미 인증된 이메일인지 확인
+	if user.IsEmailVerified {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "이미 인증된 이메일입니다."})
+		return
+	}
+
+	// 기존 미사용 토큰들 무효화
+	db.Model(&EmailVerification{}).Where("email = ? AND is_used = false", req.Email).Update("is_used", true)
+
+	// 새 인증 토큰 생성
+	token, err := generateRandomToken()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "인증 토큰 생성 실패"})
+		return
+	}
+
+	// 새 인증 정보 저장
+	verification := EmailVerification{
+		Email:     req.Email,
+		Token:     token,
+		ExpiresAt: time.Now().Add(time.Hour * 24),
+		IsUsed:    false,
+	}
+
+	if err := db.Create(&verification).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "인증 정보 저장 실패"})
+		return
+	}
+
+	// 인증 이메일 발송
+	if err := sendVerificationEmail(req.Email, token); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "인증 이메일 발송 실패"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "인증 이메일이 재발송되었습니다."})
+}
+
+// 로그인 (이메일 인증 확인 포함)
 func login(c *gin.Context) {
 	var req struct {
-		Email    string `json:"email"`
-		Password string `json:"password"`
+		Email    string `json:"email" binding:"required"`
+		Password string `json:"password" binding:"required"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -172,8 +400,14 @@ func login(c *gin.Context) {
 		return
 	}
 
-	// 디버그 로그 추가
-	log.Printf("로그인 시도: 이메일=%s, DB에 저장된 해시=%s", req.Email, user.Password)
+	// 이메일 인증 확인
+	if !user.IsEmailVerified {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"error": "이메일 인증이 완료되지 않았습니다. 이메일을 확인해주세요.",
+			"code": "EMAIL_NOT_VERIFIED",
+		})
+		return
+	}
 
 	if !checkPasswordHash(req.Password, user.Password) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "이메일 또는 비밀번호가 잘못되었습니다."})
@@ -193,6 +427,7 @@ func login(c *gin.Context) {
 			"id": user.ID,
 			"name": user.Name,
 			"email": user.Email,
+			"is_email_verified": user.IsEmailVerified,
 		},
 	})
 }
@@ -275,6 +510,7 @@ func getUserInfo(c *gin.Context) {
 		"id": user.ID,
 		"name": user.Name,
 		"email": user.Email,
+		"is_email_verified": user.IsEmailVerified,
 	})
 }
 
@@ -438,11 +674,13 @@ func main() {
 	r.Use(cors.Default())
 
 	// 인증 필요없는 API
-	r.POST("/register", register)
-	r.POST("/login", login)
-	r.POST("/refresh", refreshToken)
-	r.GET("/posts", getPosts)      // 게시글 목록 조회 - 인증 불필요
-	r.GET("/posts/:id", getPost)   // 특정 게시글 조회 - 인증 불필요
+	r.POST("/register", register)                    // 회원가입
+	r.GET("/verify-email", verifyEmail)              // 이메일 인증
+	r.POST("/resend-verification", resendVerificationEmail) // 인증 이메일 재발송
+	r.POST("/login", login)                          // 로그인
+	r.POST("/refresh", refreshToken)                 // 토큰 재발급
+	r.GET("/posts", getPosts)                        // 게시글 목록 조회
+	r.GET("/posts/:id", getPost)                     // 특정 게시글 조회
 
 	// 인증 필요한 API
 	auth := r.Group("/")
@@ -452,12 +690,12 @@ func main() {
 		db.Find(&users)
 		c.JSON(http.StatusOK, users)
 	})
-	auth.GET("/user", getUserInfo)
+	auth.GET("/user", getUserInfo)                   // 사용자 정보 조회
 	
 	// 게시글 관련 인증 필요 API
-	auth.POST("/posts", createPost)            // 게시글 작성
-	auth.PUT("/posts/:id", updatePost)         // 게시글 수정
-	auth.DELETE("/posts/:id", deletePost)      // 게시글 삭제
+	auth.POST("/posts", createPost)                  // 게시글 작성
+	auth.PUT("/posts/:id", updatePost)               // 게시글 수정
+	auth.DELETE("/posts/:id", deletePost)            // 게시글 삭제
 
 	r.Run(":8080")
 }
