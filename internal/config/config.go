@@ -1,9 +1,10 @@
 package config
 
 import (
-	"github.com/joho/godotenv"
+	"fmt"
 	"log"
 	"os"
+	"github.com/joho/godotenv"
 )
 
 type Config struct {
@@ -14,7 +15,14 @@ type Config struct {
 }
 
 type DatabaseConfig struct {
-	DSN string
+	Primary  DBConnection
+	Fallback DBConnection
+}
+
+type DBConnection struct {
+	Driver string
+	DSN    string
+	Enable bool
 }
 
 type JWTConfig struct {
@@ -43,7 +51,8 @@ func Load() *Config {
 
 	return &Config{
 		Database: DatabaseConfig{
-			DSN: os.Getenv("DB_DSN"),
+			Primary:  loadPrimaryDB(),
+			Fallback: loadFallbackDB(),
 		},
 		JWT: JWTConfig{
 			Secret: getEnvOrDefault("JWT_SECRET", "default_secret_key"),
@@ -61,6 +70,93 @@ func Load() *Config {
 			BaseURL: getEnvOrDefault("BASE_URL", "http://localhost:8080"),
 		},
 	}
+}
+
+func loadPrimaryDB() DBConnection {
+	driver := getEnvOrDefault("PRIMARY_DB_DRIVER", "mysql")
+	enable := getEnvOrDefault("PRIMARY_DB_ENABLE", "true") == "true"
+	
+	var dsn string
+	switch driver {
+	case "mysql":
+		dsn = buildMySQLDSN()
+	case "sqlite":
+		dsn = getEnvOrDefault("PRIMARY_SQLITE_PATH", "./data/primary.db")
+	default:
+		log.Printf("지원하지 않는 주 데이터베이스 드라이버: %s", driver)
+		enable = false
+	}
+
+	return DBConnection{
+		Driver: driver,
+		DSN:    dsn,
+		Enable: enable,
+	}
+}
+
+func loadFallbackDB() DBConnection {
+	driver := getEnvOrDefault("FALLBACK_DB_DRIVER", "sqlite")
+	enable := getEnvOrDefault("FALLBACK_DB_ENABLE", "true") == "true"
+	
+	var dsn string
+	switch driver {
+	case "mysql":
+		dsn = buildFallbackMySQLDSN()
+	case "sqlite":
+		dsn = getEnvOrDefault("FALLBACK_SQLITE_PATH", "./data/fallback.db")
+	default:
+		// 기본 SQLite fallback
+		driver = "sqlite"
+		dsn = "./data/fallback.db"
+	}
+
+	return DBConnection{
+		Driver: driver,
+		DSN:    dsn,
+		Enable: enable,
+	}
+}
+
+func buildMySQLDSN() string {
+	// 기존 DSN이 있으면 우선 사용
+	if dsn := os.Getenv("PRIMARY_DB_DSN"); dsn != "" {
+		return dsn
+	}
+
+	host := getEnvOrDefault("MYSQL_HOST", "localhost")
+	port := getEnvOrDefault("MYSQL_PORT", "3306")
+	username := os.Getenv("MYSQL_USERNAME")
+	password := os.Getenv("MYSQL_PASSWORD")
+	database := os.Getenv("MYSQL_DATABASE")
+	charset := getEnvOrDefault("MYSQL_CHARSET", "utf8mb4")
+	
+	if username == "" || password == "" || database == "" {
+		return ""
+	}
+	
+	return fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?charset=%s&parseTime=True&loc=Local",
+		username, password, host, port, database, charset)
+}
+
+func buildFallbackMySQLDSN() string {
+	// Fallback MySQL 설정
+	if dsn := os.Getenv("FALLBACK_DB_DSN"); dsn != "" {
+		return dsn
+	}
+
+	host := getEnvOrDefault("FALLBACK_MYSQL_HOST", "localhost")
+	port := getEnvOrDefault("FALLBACK_MYSQL_PORT", "3306")
+	username := os.Getenv("FALLBACK_MYSQL_USERNAME")
+	password := os.Getenv("FALLBACK_MYSQL_PASSWORD")
+	database := os.Getenv("FALLBACK_MYSQL_DATABASE")
+	charset := getEnvOrDefault("FALLBACK_MYSQL_CHARSET", "utf8mb4")
+	
+	if username == "" || password == "" || database == "" {
+		return ""
+	}
+	
+	return fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?charset=%s&parseTime=True&loc=Local",
+		username, password, host, port, database, charset)
 }
 
 func getEnvOrDefault(key, defaultValue string) string {
