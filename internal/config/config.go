@@ -15,23 +15,14 @@ type Config struct {
 }
 
 type DatabaseConfig struct {
-	Driver   string
-	DSN      string
-	SQLite   SQLiteConfig
-	MySQL    MySQLConfig
+	Primary  DBConnection
+	Fallback DBConnection
 }
 
-type SQLiteConfig struct {
-	Path string
-}
-
-type MySQLConfig struct {
-	Host     string
-	Port     string
-	Username string
-	Password string
-	Database string
-	Charset  string
+type DBConnection struct {
+	Driver string
+	DSN    string
+	Enable bool
 }
 
 type JWTConfig struct {
@@ -58,35 +49,10 @@ func Load() *Config {
 		log.Println("환경 변수 파일(.env) 로드 실패:", err)
 	}
 
-	driver := getEnvOrDefault("DB_DRIVER", "sqlite")
-	
-	var dsn string
-	switch driver {
-	case "mysql":
-		dsn = buildMySQLDSN()
-	case "sqlite":
-		dsn = getEnvOrDefault("SQLITE_PATH", "./data/app.db")
-	default:
-		log.Printf("지원하지 않는 데이터베이스 드라이버: %s, SQLite를 사용합니다", driver)
-		driver = "sqlite"
-		dsn = "./data/app.db"
-	}
-
 	return &Config{
 		Database: DatabaseConfig{
-			Driver: driver,
-			DSN:    dsn,
-			SQLite: SQLiteConfig{
-				Path: getEnvOrDefault("SQLITE_PATH", "./data/app.db"),
-			},
-			MySQL: MySQLConfig{
-				Host:     getEnvOrDefault("MYSQL_HOST", "localhost"),
-				Port:     getEnvOrDefault("MYSQL_PORT", "3306"),
-				Username: os.Getenv("MYSQL_USERNAME"),
-				Password: os.Getenv("MYSQL_PASSWORD"),
-				Database: os.Getenv("MYSQL_DATABASE"),
-				Charset:  getEnvOrDefault("MYSQL_CHARSET", "utf8mb4"),
-			},
+			Primary:  loadPrimaryDB(),
+			Fallback: loadFallbackDB(),
 		},
 		JWT: JWTConfig{
 			Secret: getEnvOrDefault("JWT_SECRET", "default_secret_key"),
@@ -106,7 +72,57 @@ func Load() *Config {
 	}
 }
 
+func loadPrimaryDB() DBConnection {
+	driver := getEnvOrDefault("PRIMARY_DB_DRIVER", "mysql")
+	enable := getEnvOrDefault("PRIMARY_DB_ENABLE", "true") == "true"
+	
+	var dsn string
+	switch driver {
+	case "mysql":
+		dsn = buildMySQLDSN()
+	case "sqlite":
+		dsn = getEnvOrDefault("PRIMARY_SQLITE_PATH", "./data/primary.db")
+	default:
+		log.Printf("지원하지 않는 주 데이터베이스 드라이버: %s", driver)
+		enable = false
+	}
+
+	return DBConnection{
+		Driver: driver,
+		DSN:    dsn,
+		Enable: enable,
+	}
+}
+
+func loadFallbackDB() DBConnection {
+	driver := getEnvOrDefault("FALLBACK_DB_DRIVER", "sqlite")
+	enable := getEnvOrDefault("FALLBACK_DB_ENABLE", "true") == "true"
+	
+	var dsn string
+	switch driver {
+	case "mysql":
+		dsn = buildFallbackMySQLDSN()
+	case "sqlite":
+		dsn = getEnvOrDefault("FALLBACK_SQLITE_PATH", "./data/fallback.db")
+	default:
+		// 기본 SQLite fallback
+		driver = "sqlite"
+		dsn = "./data/fallback.db"
+	}
+
+	return DBConnection{
+		Driver: driver,
+		DSN:    dsn,
+		Enable: enable,
+	}
+}
+
 func buildMySQLDSN() string {
+	// 기존 DSN이 있으면 우선 사용
+	if dsn := os.Getenv("PRIMARY_DB_DSN"); dsn != "" {
+		return dsn
+	}
+
 	host := getEnvOrDefault("MYSQL_HOST", "localhost")
 	port := getEnvOrDefault("MYSQL_PORT", "3306")
 	username := os.Getenv("MYSQL_USERNAME")
@@ -115,7 +131,28 @@ func buildMySQLDSN() string {
 	charset := getEnvOrDefault("MYSQL_CHARSET", "utf8mb4")
 	
 	if username == "" || password == "" || database == "" {
-		return os.Getenv("DB_DSN")
+		return ""
+	}
+	
+	return fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?charset=%s&parseTime=True&loc=Local",
+		username, password, host, port, database, charset)
+}
+
+func buildFallbackMySQLDSN() string {
+	// Fallback MySQL 설정
+	if dsn := os.Getenv("FALLBACK_DB_DSN"); dsn != "" {
+		return dsn
+	}
+
+	host := getEnvOrDefault("FALLBACK_MYSQL_HOST", "localhost")
+	port := getEnvOrDefault("FALLBACK_MYSQL_PORT", "3306")
+	username := os.Getenv("FALLBACK_MYSQL_USERNAME")
+	password := os.Getenv("FALLBACK_MYSQL_PASSWORD")
+	database := os.Getenv("FALLBACK_MYSQL_DATABASE")
+	charset := getEnvOrDefault("FALLBACK_MYSQL_CHARSET", "utf8mb4")
+	
+	if username == "" || password == "" || database == "" {
+		return ""
 	}
 	
 	return fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?charset=%s&parseTime=True&loc=Local",
