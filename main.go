@@ -651,7 +651,7 @@ func deletePost(c *gin.Context) {
 		return
 	}
 	
-	// 작성자 확인
+	
 	if post.UserID != userID.(uint) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "자신의 게시글만 삭제할 수 있습니다."})
 		return
