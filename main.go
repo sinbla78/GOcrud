@@ -82,7 +82,7 @@ func initDB() {
 	if err != nil {
 		log.Fatal("DB 연결 실패:", err)
 	}
-	
+
 	// 모델 마이그레이션
 	db.AutoMigrate(&User{}, &Post{}, &EmailVerification{})
 }
@@ -93,13 +93,13 @@ func loadEnv() {
 	if err != nil {
 		log.Println("환경 변수 파일(.env) 로드 실패:", err)
 	}
-	
+
 	jwtSecret = []byte(os.Getenv("JWT_SECRET"))
 	if len(jwtSecret) == 0 {
 		log.Println("경고: JWT_SECRET이 설정되지 않았습니다. 기본값 사용")
 		jwtSecret = []byte("default_secret_key")
 	}
-	
+
 	// 이메일 설정 로드
 	emailConfig = EmailConfig{
 		SMTPHost:     os.Getenv("SMTP_HOST"),
@@ -109,7 +109,7 @@ func loadEnv() {
 		FromEmail:    os.Getenv("FROM_EMAIL"),
 		FromName:     os.Getenv("FROM_NAME"),
 	}
-	
+
 	// 기본값 설정
 	if emailConfig.SMTPHost == "" {
 		emailConfig.SMTPHost = "smtp.gmail.com"
@@ -135,25 +135,25 @@ func generateRandomToken() (string, error) {
 func sendEmail(to, subject, body string) error {
 	from := emailConfig.FromEmail
 	password := emailConfig.SMTPPassword
-	
+
 	// Gmail SMTP 설정
 	smtpHost := emailConfig.SMTPHost
 	smtpPort := emailConfig.SMTPPort
-	
+
 	message := []byte(fmt.Sprintf("To: %s\r\n"+
 		"Subject: %s\r\n"+
 		"MIME-version: 1.0;\r\n"+
 		"Content-Type: text/html; charset=\"UTF-8\";\r\n\r\n"+
 		"%s\r\n", to, subject, body))
-	
+
 	auth := smtp.PlainAuth("", from, password, smtpHost)
-	
+
 	err := smtp.SendMail(smtpHost+":"+smtpPort, auth, from, []string{to}, message)
 	if err != nil {
 		log.Printf("이메일 발송 실패: %v", err)
 		return err
 	}
-	
+
 	log.Printf("이메일 발송 성공: %s", to)
 	return nil
 }
@@ -164,7 +164,7 @@ func sendVerificationEmail(email, token string) error {
 	if os.Getenv("BASE_URL") == "" {
 		verificationURL = fmt.Sprintf("http://localhost:8080/verify-email?token=%s", token)
 	}
-	
+
 	subject := "이메일 인증을 완료해주세요"
 	body := fmt.Sprintf(`
 		<html>
@@ -180,7 +180,7 @@ func sendVerificationEmail(email, token string) error {
 		</body>
 		</html>
 	`, verificationURL, verificationURL)
-	
+
 	return sendEmail(email, subject, body)
 }
 
@@ -234,7 +234,7 @@ func register(c *gin.Context) {
 		Email    string `json:"email" binding:"required,email"`
 		Password string `json:"password" binding:"required,min=6"`
 	}
-	
+
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "잘못된 입력 데이터: " + err.Error()})
 		return
@@ -331,7 +331,7 @@ func resendVerificationEmail(c *gin.Context) {
 	var req struct {
 		Email string `json:"email" binding:"required,email"`
 	}
-	
+
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "유효한 이메일을 입력해주세요."})
 		return
@@ -404,7 +404,7 @@ func login(c *gin.Context) {
 	if !user.IsEmailVerified {
 		c.JSON(http.StatusUnauthorized, gin.H{
 			"error": "이메일 인증이 완료되지 않았습니다. 이메일을 확인해주세요.",
-			"code": "EMAIL_NOT_VERIFIED",
+			"code":  "EMAIL_NOT_VERIFIED",
 		})
 		return
 	}
@@ -421,12 +421,12 @@ func login(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"access_token": accessToken, 
-		"refresh_token": refreshToken, 
+		"access_token":  accessToken,
+		"refresh_token": refreshToken,
 		"user": gin.H{
-			"id": user.ID,
-			"name": user.Name,
-			"email": user.Email,
+			"id":                user.ID,
+			"name":              user.Name,
+			"email":             user.Email,
 			"is_email_verified": user.IsEmailVerified,
 		},
 	})
@@ -499,17 +499,17 @@ func AuthMiddleware() gin.HandlerFunc {
 // 사용자 정보 조회 핸들러
 func getUserInfo(c *gin.Context) {
 	userID, _ := c.Get("userID")
-	
+
 	var user User
 	if err := db.First(&user, userID).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "사용자를 찾을 수 없습니다."})
 		return
 	}
-	
+
 	c.JSON(http.StatusOK, gin.H{
-		"id": user.ID,
-		"name": user.Name,
-		"email": user.Email,
+		"id":                user.ID,
+		"name":              user.Name,
+		"email":             user.Email,
 		"is_email_verified": user.IsEmailVerified,
 	})
 }
@@ -517,28 +517,28 @@ func getUserInfo(c *gin.Context) {
 // 게시글 작성 핸들러
 func createPost(c *gin.Context) {
 	userID, _ := c.Get("userID")
-	
+
 	var req struct {
 		Title   string `json:"title" binding:"required"`
 		Content string `json:"content" binding:"required"`
 	}
-	
+
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "제목과 내용은 필수입니다."})
 		return
 	}
-	
+
 	post := Post{
 		Title:   req.Title,
 		Content: req.Content,
 		UserID:  userID.(uint),
 	}
-	
+
 	if err := db.Create(&post).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "게시글 작성 실패"})
 		return
 	}
-	
+
 	c.JSON(http.StatusCreated, gin.H{
 		"message": "게시글이 작성되었습니다.",
 		"post_id": post.ID,
@@ -548,12 +548,12 @@ func createPost(c *gin.Context) {
 // 게시글 목록 조회 핸들러
 func getPosts(c *gin.Context) {
 	var posts []Post
-	
+
 	// 페이지네이션
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	perPage, _ := strconv.Atoi(c.DefaultQuery("per_page", "10"))
 	offset := (page - 1) * perPage
-	
+
 	// 게시글 조회 시 작성자 정보 포함
 	if err := db.Preload("User").
 		Select("posts.*, users.name").
@@ -565,11 +565,11 @@ func getPosts(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "게시글 목록 조회 실패"})
 		return
 	}
-	
+
 	// 전체 게시글 수 계산
 	var total int64
 	db.Model(&Post{}).Count(&total)
-	
+
 	c.JSON(http.StatusOK, gin.H{
 		"posts": posts,
 		"meta": gin.H{
@@ -584,13 +584,13 @@ func getPosts(c *gin.Context) {
 // 특정 게시글 조회 핸들러
 func getPost(c *gin.Context) {
 	id := c.Param("id")
-	
+
 	var post Post
 	if err := db.Preload("User").First(&post, id).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "게시글을 찾을 수 없습니다."})
 		return
 	}
-	
+
 	c.JSON(http.StatusOK, post)
 }
 
@@ -598,29 +598,29 @@ func getPost(c *gin.Context) {
 func updatePost(c *gin.Context) {
 	id := c.Param("id")
 	userID, _ := c.Get("userID")
-	
+
 	var post Post
 	if err := db.First(&post, id).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "게시글을 찾을 수 없습니다."})
 		return
 	}
-	
+
 	// 작성자 확인
 	if post.UserID != userID.(uint) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "자신의 게시글만 수정할 수 있습니다."})
 		return
 	}
-	
+
 	var req struct {
 		Title   string `json:"title"`
 		Content string `json:"content"`
 	}
-	
+
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "잘못된 입력 데이터"})
 		return
 	}
-	
+
 	// 제목이나 내용이 비어있지 않을 경우에만 업데이트
 	if req.Title != "" {
 		post.Title = req.Title
@@ -628,15 +628,15 @@ func updatePost(c *gin.Context) {
 	if req.Content != "" {
 		post.Content = req.Content
 	}
-	
+
 	if err := db.Save(&post).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "게시글 수정 실패"})
 		return
 	}
-	
+
 	c.JSON(http.StatusOK, gin.H{
 		"message": "게시글이 수정되었습니다.",
-		"post": post,
+		"post":    post,
 	})
 }
 
@@ -644,24 +644,23 @@ func updatePost(c *gin.Context) {
 func deletePost(c *gin.Context) {
 	id := c.Param("id")
 	userID, _ := c.Get("userID")
-	
+
 	var post Post
 	if err := db.First(&post, id).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "게시글을 찾을 수 없습니다."})
 		return
 	}
-	
-	
+
 	if post.UserID != userID.(uint) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "자신의 게시글만 삭제할 수 있습니다."})
 		return
 	}
-	
+
 	if err := db.Delete(&post).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "게시글 삭제 실패"})
 		return
 	}
-	
+
 	c.JSON(http.StatusOK, gin.H{"message": "게시글이 삭제되었습니다."})
 }
 
@@ -674,13 +673,13 @@ func main() {
 	r.Use(cors.Default())
 
 	// 인증 필요없는 API
-	r.POST("/register", register)                    // 회원가입
-	r.GET("/verify-email", verifyEmail)              // 이메일 인증
+	r.POST("/register", register)                           // 회원가입
+	r.GET("/verify-email", verifyEmail)                     // 이메일 인증
 	r.POST("/resend-verification", resendVerificationEmail) // 인증 이메일 재발송
-	r.POST("/login", login)                          // 로그인
-	r.POST("/refresh", refreshToken)                 // 토큰 재발급
-	r.GET("/posts", getPosts)                        // 게시글 목록 조회
-	r.GET("/posts/:id", getPost)                     // 특정 게시글 조회
+	r.POST("/login", login)                                 // 로그인
+	r.POST("/refresh", refreshToken)                        // 토큰 재발급
+	r.GET("/posts", getPosts)                               // 게시글 목록 조회
+	r.GET("/posts/:id", getPost)                            // 특정 게시글 조회
 
 	// 인증 필요한 API
 	auth := r.Group("/")
@@ -690,12 +689,12 @@ func main() {
 		db.Find(&users)
 		c.JSON(http.StatusOK, users)
 	})
-	auth.GET("/user", getUserInfo)                   // 사용자 정보 조회
-	
+	auth.GET("/user", getUserInfo) // 사용자 정보 조회
+
 	// 게시글 관련 인증 필요 API
-	auth.POST("/posts", createPost)                  // 게시글 작성
-	auth.PUT("/posts/:id", updatePost)               // 게시글 수정
-	auth.DELETE("/posts/:id", deletePost)            // 게시글 삭제
+	auth.POST("/posts", createPost)       // 게시글 작성
+	auth.PUT("/posts/:id", updatePost)    // 게시글 수정
+	auth.DELETE("/posts/:id", deletePost) // 게시글 삭제
 
 	r.Run(":8080")
 }
