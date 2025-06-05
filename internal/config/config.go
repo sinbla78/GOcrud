@@ -1,9 +1,10 @@
 package config
 
 import (
-	"github.com/joho/godotenv"
+	"fmt"
 	"log"
 	"os"
+	"github.com/joho/godotenv"
 )
 
 type Config struct {
@@ -14,7 +15,23 @@ type Config struct {
 }
 
 type DatabaseConfig struct {
-	DSN string
+	Driver   string
+	DSN      string
+	SQLite   SQLiteConfig
+	MySQL    MySQLConfig
+}
+
+type SQLiteConfig struct {
+	Path string
+}
+
+type MySQLConfig struct {
+	Host     string
+	Port     string
+	Username string
+	Password string
+	Database string
+	Charset  string
 }
 
 type JWTConfig struct {
@@ -41,9 +58,35 @@ func Load() *Config {
 		log.Println("환경 변수 파일(.env) 로드 실패:", err)
 	}
 
+	driver := getEnvOrDefault("DB_DRIVER", "sqlite")
+	
+	var dsn string
+	switch driver {
+	case "mysql":
+		dsn = buildMySQLDSN()
+	case "sqlite":
+		dsn = getEnvOrDefault("SQLITE_PATH", "./data/app.db")
+	default:
+		log.Printf("지원하지 않는 데이터베이스 드라이버: %s, SQLite를 사용합니다", driver)
+		driver = "sqlite"
+		dsn = "./data/app.db"
+	}
+
 	return &Config{
 		Database: DatabaseConfig{
-			DSN: os.Getenv("DB_DSN"),
+			Driver: driver,
+			DSN:    dsn,
+			SQLite: SQLiteConfig{
+				Path: getEnvOrDefault("SQLITE_PATH", "./data/app.db"),
+			},
+			MySQL: MySQLConfig{
+				Host:     getEnvOrDefault("MYSQL_HOST", "localhost"),
+				Port:     getEnvOrDefault("MYSQL_PORT", "3306"),
+				Username: os.Getenv("MYSQL_USERNAME"),
+				Password: os.Getenv("MYSQL_PASSWORD"),
+				Database: os.Getenv("MYSQL_DATABASE"),
+				Charset:  getEnvOrDefault("MYSQL_CHARSET", "utf8mb4"),
+			},
 		},
 		JWT: JWTConfig{
 			Secret: getEnvOrDefault("JWT_SECRET", "default_secret_key"),
@@ -61,6 +104,22 @@ func Load() *Config {
 			BaseURL: getEnvOrDefault("BASE_URL", "http://localhost:8080"),
 		},
 	}
+}
+
+func buildMySQLDSN() string {
+	host := getEnvOrDefault("MYSQL_HOST", "localhost")
+	port := getEnvOrDefault("MYSQL_PORT", "3306")
+	username := os.Getenv("MYSQL_USERNAME")
+	password := os.Getenv("MYSQL_PASSWORD")
+	database := os.Getenv("MYSQL_DATABASE")
+	charset := getEnvOrDefault("MYSQL_CHARSET", "utf8mb4")
+	
+	if username == "" || password == "" || database == "" {
+		return os.Getenv("DB_DSN")
+	}
+	
+	return fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?charset=%s&parseTime=True&loc=Local",
+		username, password, host, port, database, charset)
 }
 
 func getEnvOrDefault(key, defaultValue string) string {
